@@ -26,7 +26,10 @@
 
 #include "../board.h"
 #include "stm32f1xx_hal.h"
+#include <stdio.h>
 
+UART_HandleTypeDef huart1;
+uint8_t getBuffer;
 //--------------------------------------------------------------------+
 // Forward USB interrupt events to TinyUSB IRQ Handler
 //--------------------------------------------------------------------+
@@ -45,6 +48,19 @@ void USBWakeUp_IRQHandler(void)
   tud_int_handler(0);
 }
 
+void USART1_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart1);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if(huart->Instance == USART1)
+  {
+    while(HAL_UART_Transmit(&huart1, &getBuffer, 1, 5000) != HAL_OK);
+    HAL_UART_Receive_IT(&huart1, &getBuffer, 1);
+  }
+}
 //--------------------------------------------------------------------+
 // MACRO TYPEDEF CONSTANT ENUM
 //--------------------------------------------------------------------+
@@ -60,7 +76,7 @@ void USBWakeUp_IRQHandler(void)
 /**
   * @brief  System Clock Configuration
   *         The system Clock is configured as follow :
-  *            System Clock source            = PLL (HSE)
+  *            System Clock source            = wLL (HSE)
   *            SYSCLK(Hz)                     = 72000000
   *            HCLK(Hz)                       = 72000000
   *            AHB Prescaler                  = 1
@@ -102,17 +118,68 @@ void SystemClock_Config(void)
   HAL_RCC_ClockConfig(&clkinitstruct, FLASH_LATENCY_2);
 }
 
+void USART1_USART_Init(void)
+{
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_PARITY_NONE;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  HAL_UART_Init(&huart1);
+}
+
+void HAL_UART_MspInit(UART_HandleTypeDef *huart)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(huart->Instance == USART1)
+  {
+    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**USART1 GPIO Configuration
+      PA9     ------> USART1_TX
+      PA10     ------> USART1_RX
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    HAL_NVIC_SetPriority(USART1_IRQn, 1, 1);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
+  }
+}
+
+void HAL_UART_MspDeInit(UART_HandleTypeDef *huart)
+{
+  if(huart->Instance == USART1)
+  {
+    __HAL_RCC_USART1_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+  }
+}
 void board_init(void)
 {
+  // __HAL_RCC_AFIO_CLK_ENABLE();
+  HAL_Init();
+  HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_2);
 
   SystemClock_Config();
   
   #if CFG_TUSB_OS  == OPT_OS_NONE
   // 1ms tick timer
-  SysTick_Config(SystemCoreClock / 1000);
+  // SysTick_Config(SystemCoreClock / 1000);
   #endif
-  
-  // LED
+
+  // LED 
   __HAL_RCC_GPIOC_CLK_ENABLE();
   GPIO_InitTypeDef  GPIO_InitStruct;
   GPIO_InitStruct.Pin = LED_PIN;
@@ -138,8 +205,10 @@ void board_init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  // USB Clock enable
-  __HAL_RCC_USB_CLK_ENABLE();
+  board_led_write(1);
+  USART1_USART_Init();
+  HAL_UART_Receive_IT(&huart1, &getBuffer, 1);
+  HAL_Delay(1000);
 }
 
 //--------------------------------------------------------------------+
@@ -169,16 +238,17 @@ int board_uart_write(void const * buf, int len)
 }
 
 #if CFG_TUSB_OS  == OPT_OS_NONE
-volatile uint32_t system_ticks = 0;
+// volatile uint32_t system_ticks = 0;
 void SysTick_Handler (void)
 {
-  system_ticks++;
+  // system_ticks++;
+  HAL_IncTick();
 }
 
-uint32_t board_millis(void)
-{
-  return system_ticks;
-}
+// uint32_t board_millis(void)
+// {
+//   return system_ticks;
+// }
 #endif
 
 void HardFault_Handler (void)
