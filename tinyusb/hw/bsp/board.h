@@ -41,6 +41,7 @@
 #include "ansi_escape.h"
 #include "tusb.h"
 
+#define BUFFER_SIZE 255
 #define CFG_BOARD_UART_BAUDRATE    115200
 
 //--------------------------------------------------------------------+

@@ -27,9 +27,9 @@
 #include "../board.h"
 #include "stm32f1xx_hal.h"
 #include <stdio.h>
-
-UART_HandleTypeDef huart1;
-uint8_t getBuffer;
+UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
+uint8_t uart2_Rx_getBuffer[255];
 //--------------------------------------------------------------------+
 // Forward USB interrupt events to TinyUSB IRQ Handler
 //--------------------------------------------------------------------+
@@ -47,19 +47,36 @@ void USBWakeUp_IRQHandler(void)
 {
   tud_int_handler(0);
 }
-
-void USART1_IRQHandler(void)
+//串口的dma+空闲中断的处理函数
+//当有串口出现没接到一个byte数据时间长度时，便会出现空闲中断
+void uart2_dma_RxCallback(void)
 {
-  HAL_UART_IRQHandler(&huart1);
+    uint32_t data_length = 0;
+    HAL_UART_DMAStop(&huart2);
+    data_length = BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart2_rx);
+    HAL_UART_Transmit(&huart2, uart2_Rx_getBuffer, data_length, 1000);
+    printf("\r\n");
+    printf("data length = %ld\r\n", data_length);
+    memset(uart2_Rx_getBuffer, 0, data_length);
+    data_length = 0;
+    HAL_UART_Receive_DMA(&huart2, (uint8_t *)uart2_Rx_getBuffer, BUFFER_SIZE);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void USART2_IRQHandler(void)
 {
-  if(huart->Instance == USART1)
+  HAL_UART_IRQHandler(&huart2);
+  if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_IDLE) != RESET)
   {
-    while(HAL_UART_Transmit(&huart1, &getBuffer, 1, 5000) != HAL_OK);
-    HAL_UART_Receive_IT(&huart1, &getBuffer, 1);
+    __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+    uart2_dma_RxCallback();
   }
+}
+
+int fputc(int ch, FILE *p)
+{
+  (void) *p;
+  HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 1000);
+	return ch;
 }
 //--------------------------------------------------------------------+
 // MACRO TYPEDEF CONSTANT ENUM
@@ -76,7 +93,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /**
   * @brief  System Clock Configuration
   *         The system Clock is configured as follow :
-  *            System Clock source            = wLL (HSE)
+  *            System Clock source            = PLL (HSE)
   *            SYSCLK(Hz)                     = 72000000
   *            HCLK(Hz)                       = 72000000
   *            AHB Prescaler                  = 1
@@ -118,68 +135,87 @@ void SystemClock_Config(void)
   HAL_RCC_ClockConfig(&clkinitstruct, FLASH_LATENCY_2);
 }
 
-void USART1_USART_Init(void)
+
+void USART2_USART_Init(void)
 {
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_PARITY_NONE;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  HAL_UART_Init(&huart1);
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  HAL_UART_Init(&huart2);
+  __HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
+  HAL_UART_Receive_DMA(&huart2, (uint8_t *)uart2_Rx_getBuffer, BUFFER_SIZE);
+  // HAL_UART_Receive_IT(&huart2, (uint8_t *)uart2_Rx_getBuffer,1);
 }
 
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(huart->Instance == USART1)
+  if(huart->Instance == USART2)
   {
-    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_USART2_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
-    /**USART1 GPIO Configuration
-      PA9     ------> USART1_TX
-      PA10     ------> USART1_RX
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    /**USART2 GPIO Configuration
+      PA2     ------> USART2_TX
+      PA3     ------> USART2_RX
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_9;
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = GPIO_PIN_10;
+    GPIO_InitStruct.Pin = GPIO_PIN_3;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    HAL_NVIC_SetPriority(USART1_IRQn, 1, 1);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
+    hdma_usart2_rx.Instance = DMA1_Channel6;
+    hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart2_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart2_rx.Init.MemInc = DMA_PINC_ENABLE;
+    hdma_usart2_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.Mode = DMA_NORMAL;
+    hdma_usart2_rx.Init.Priority = DMA_PRIORITY_LOW;
+    if (HAL_DMA_Init(&hdma_usart2_rx) != HAL_OK)
+    {
+    }
+    __HAL_LINKDMA(huart, hdmarx, hdma_usart2_rx);
+
+    HAL_NVIC_SetPriority(USART2_IRQn, 1, 1);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    
   }
 }
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *huart)
 {
-  if(huart->Instance == USART1)
+  if(huart->Instance == USART2)
   {
-    __HAL_RCC_USART1_CLK_DISABLE();
-    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
-    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    __HAL_RCC_USART2_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2|GPIO_PIN_3);
+    HAL_DMA_DeInit(huart->hdmarx);
+    HAL_NVIC_DisableIRQ(USART2_IRQn);
   }
 }
+
 void board_init(void)
 {
-  // __HAL_RCC_AFIO_CLK_ENABLE();
   HAL_Init();
   HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_2);
-
   SystemClock_Config();
   
   #if CFG_TUSB_OS  == OPT_OS_NONE
   // 1ms tick timer
-  // SysTick_Config(SystemCoreClock / 1000);
+  SysTick_Config(SystemCoreClock / 1000);
   #endif
-
-  // LED 
+  
+  // LED
   __HAL_RCC_GPIOC_CLK_ENABLE();
   GPIO_InitTypeDef  GPIO_InitStruct;
   GPIO_InitStruct.Pin = LED_PIN;
@@ -205,10 +241,11 @@ void board_init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  // USB Clock enable
+  __HAL_RCC_USB_CLK_ENABLE();
+
   board_led_write(1);
-  USART1_USART_Init();
-  HAL_UART_Receive_IT(&huart1, &getBuffer, 1);
-  HAL_Delay(1000);
+  USART2_USART_Init();
 }
 
 //--------------------------------------------------------------------+
@@ -228,27 +265,28 @@ uint32_t board_button_read(void)
 int board_uart_read(uint8_t* buf, int len)
 {
   (void) buf; (void) len;
+  HAL_UART_Receive(&huart2, buf, len, 1000);
   return 0;
 }
 
 int board_uart_write(void const * buf, int len)
 {
   (void) buf; (void) len;
+  HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 1000);
   return 0;
 }
 
 #if CFG_TUSB_OS  == OPT_OS_NONE
-// volatile uint32_t system_ticks = 0;
+volatile uint32_t system_ticks = 0;
 void SysTick_Handler (void)
 {
-  // system_ticks++;
-  HAL_IncTick();
+  system_ticks++;
 }
 
-// uint32_t board_millis(void)
-// {
-//   return system_ticks;
-// }
+uint32_t board_millis(void)
+{
+  return system_ticks;
+}
 #endif
 
 void HardFault_Handler (void)

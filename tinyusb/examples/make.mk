@@ -92,7 +92,6 @@ CFLAGS += \
   -Wall \
   -Wextra \
   -Werror \
-  -Wfatal-errors \
   -Werror-implicit-function-declaration \
   -Wfloat-equal \
   -Wundef \
@@ -101,7 +100,6 @@ CFLAGS += \
   -Wsign-compare \
   -Wmissing-format-attribute \
   -Wunreachable-code \
-  -Wcast-align \
   -Wcast-function-type
 
 # Debugging/Optimization
